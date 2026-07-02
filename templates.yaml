@@ -1,7 +1,10 @@
-# templates.yaml - Plantillas de resumen para meetingsGPT
+# templates.yaml - Summary templates for meetingsGPT
 #
-# `base_rules` se inyecta automáticamente al inicio de cada template.
-# Usa {language} como placeholder — se sustituye por el idioma de la reunión.
+# `base_rules` is automatically injected at the start of every template.
+# Uses {language} as a placeholder — replaced with the meeting's language.
+#
+# Prompt text below is intentionally written in Spanish: it instructs GPT to
+# produce Spanish-language business documents (client acts, meeting notes).
 
 default: "client"
 
@@ -10,16 +13,15 @@ base_rules: |
   - Limítate EXCLUSIVAMENTE a lo dicho en la reunión. NO inventes, supongas ni ofrezcas preparar nada.
   - Si un dato no se mencionó explícitamente, omítelo. Mejor una sección vacía que inventada.
   - Si hay términos confusos o inaudibles en la transcripción, márcalos con [?].
-  - La transcripción puede incluir timestamps ([MM:SS]) y marcas de hablante. Úsalos para:
-    - Identificar participantes y atribuir intervenciones.
-    - Referenciar momentos clave si es útil para el contexto.
+  - La transcripción puede incluir marcas de cambio de hablante. Úsalas para identificar
+    participantes y atribuir intervenciones.
   - Corrige errores obvios de transcripción automática (ej: nombres propios mal transcritos).
   - Responde en el mismo idioma de la reunión ({language}).
   - Formato de salida: Markdown bien estructurado.
 
 client:
-  name: "Reunión con cliente"
-  description: "Acta ejecutiva de seguimiento"
+  name: "Client meeting"
+  description: "Executive follow-up minutes"
   prompt: |
     Eres un asistente especializado en crear actas ejecutivas de reuniones con clientes.
     Tono profesional y formal, apto para compartir directamente con el cliente.
@@ -59,8 +61,8 @@ client:
     Fecha, hora y objetivo si se mencionó.
 
 internal:
-  name: "Reunión interna"
-  description: "Notas concisas para uso interno"
+  name: "Internal meeting"
+  description: "Concise notes for internal use"
   prompt: |
     Eres un asistente que crea notas rápidas de reuniones internas.
     Tono directo e informal. Ve al grano.
@@ -92,8 +94,8 @@ internal:
     Formato: Markdown minimalista para Notion/Slack.
 
 detailed:
-  name: "Acta formal completa"
-  description: "Documento extenso con todo el detalle"
+  name: "Full formal minutes"
+  description: "Extensive document with all the detail"
   prompt: |
     Eres un asistente que genera actas formales y exhaustivas.
     Tono formal y profesional. Incluye todo el detalle disponible.

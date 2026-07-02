@@ -1,97 +1,114 @@
 # meetingsGPT
 
-![Python - 3.13](https://img.shields.io/badge/Python-3.13-blue?logo=python&logoColor=white)
+![Python - 3.13+](https://img.shields.io/badge/Python-3.13%2B-blue?logo=python&logoColor=white)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Transcribe y resume vídeos de reuniones con Whisper + GPT.
+A CLI tool that turns meeting recordings into clean, ready-to-share summaries: extract audio, transcribe it, and generate a structured write-up — all through a single command.
 
-Proyecto de [jorgesm](https://github.com/jorgesm).
+## Features
 
-## Requisitos
+- **One command, full pipeline**: video in, transcription + summary out
+- **Fast, parallel transcription** via OpenAI's `gpt-4o-mini-transcribe`, chunked and processed concurrently
+- **Customizable summary templates** (`client`, `internal`, `detailed`, or your own) defined in a single YAML file — no code changes needed to add a new one
+- **Smart caching**: safe to re-run — already-processed audio chunks and transcriptions aren't redone (or re-billed)
+- **Domain vocabulary hints** to improve accuracy on proper nouns, acronyms, and jargon
 
-- Python 3.13+ y [uv](https://docs.astral.sh/uv/) para gestión de dependencias
-- `ffmpeg` disponible en el `PATH`
-- Una API key de OpenAI
+## Requirements
 
-## Instalación
+- Python 3.13+ and [uv](https://docs.astral.sh/uv/) for dependency management
+- `ffmpeg` available on `PATH`
+- An OpenAI API key — note that running this tool calls the OpenAI API for both transcription and summarization, which incurs usage costs on your account
+
+## Installation
 
 ```bash
+git clone https://github.com/jorgesm/meetingsGPT.git
+cd meetingsGPT
 uv sync
 cp .env.example .env
-# Edita .env y añade tu OPENAI_API_KEY
+# Edit .env and add your OPENAI_API_KEY
 ```
 
-## Uso rápido
+## Quick usage
 
 ```bash
-# Resumen con tipo por defecto (client)
-python -m meetingsgpt run /ruta/al/video.mov
+# Summary with the default type (client)
+python -m meetingsgpt run /path/to/video.mov
 
-# Especificar tipo de resumen
-python -m meetingsgpt run /ruta/al/video.mov --type internal
+# Specify a summary type
+python -m meetingsgpt run /path/to/video.mov --type internal
 
-# Solo transcribir (sin resumen)
-python -m meetingsgpt run /ruta/al/video.mov --transcribe-only
+# Transcribe only (no summary)
+python -m meetingsgpt run /path/to/video.mov --transcribe-only
 
-# Ver tipos de resumen disponibles
+# List available summary types
 python -m meetingsgpt list-types
 ```
 
-## Tipos de resumen
+## Summary types
 
-Configurables en `templates.yaml`:
+Configurable in `templates.yaml`:
 
-| Tipo       | Descripción                                  |
-|------------|----------------------------------------------|
-| `client`   | Acta ejecutiva de seguimiento (por defecto)  |
-| `internal` | Notas concisas para uso interno              |
-| `detailed` | Acta formal completa con todo el detalle     |
+| Type       | Description                              |
+|------------|-------------------------------------------|
+| `client`   | Executive follow-up minutes (default)     |
+| `internal` | Concise notes for internal use            |
+| `detailed` | Full formal minutes with all the detail   |
 
-Puedes agregar nuevos tipos editando `templates.yaml`.
+You can add new types by editing `templates.yaml`.
 
-## Parámetros
+## Parameters
 
-| Parámetro                  | Descripción                                       |
-|----------------------------|---------------------------------------------------|
-| `--type`, `-t`             | Tipo de resumen a generar                         |
-| `--language`, `-l`         | Idioma de transcripción (defecto: `es`)           |
-| `--model`, `-m`            | Modelo GPT para resumen (defecto: `gpt-5.4-mini`)|
-| `--workers`, `-w`          | Hilos paralelos para transcripción (defecto: 4)  |
-| `--no-post-process`        | Desactivar limpieza GPT de la transcripción       |
-| `--no-timestamps`          | No incluir timestamps en la transcripción         |
-| `--vocabulary`             | Fichero con vocabulario del dominio (uno por línea)|
-| `--keep-intermediate`      | Mantener archivos intermedios                     |
-| `--no-silence`             | Usar duración fija en vez de silencios            |
-| `--chunk-ms`               | Duración de chunks en ms (defecto: 300000)        |
-| `--overlap-ms`             | Solapamiento entre chunks (defecto: 5000)         |
-| `--transcribe-only`        | Solo transcribir, sin resumir                     |
+| Parameter              | Description                                            |
+|------------------------|---------------------------------------------------------|
+| `--type`, `-t`         | Summary type to generate                                |
+| `--language`, `-l`     | Transcription language (default: `es`)                  |
+| `--model`, `-m`        | GPT model for summarization (default: `gpt-5.4-mini`)   |
+| `--workers`, `-w`      | Parallel threads for transcription (default: 4)         |
+| `--no-post-process`    | Disable GPT cleanup of the transcription                |
+| `--vocabulary`         | File with domain vocabulary (one term per line)         |
+| `--keep-intermediate`  | Keep intermediate files                                 |
+| `--no-silence`         | Use fixed duration instead of silence detection         |
+| `--chunk-ms`           | Chunk duration in ms (default: 300000)                  |
+| `--overlap-ms`         | Overlap between chunks in ms (default: 5000)            |
+| `--transcribe-only`    | Only transcribe, skip summarization                     |
 
-## Vocabulario del dominio
+Run `python -m meetingsgpt run --help` for the full, always-up-to-date list.
 
-Crea un fichero `vocabulary.txt` (o pasa `--vocabulary ruta/al/fichero.txt`) con nombres propios, acrónimos y términos técnicos frecuentes para mejorar la transcripción:
+## Domain vocabulary
+
+Create a `vocabulary.txt` file (or pass `--vocabulary path/to/file.txt`) with proper nouns, acronyms, and technical terms to improve transcription accuracy:
 
 ```text
-GPTadvisor
-CNMV
+OpenAI
+Whisper
 ```
 
-## Salida
+## Output
 
 ```text
 outputs/20260326_video/
-├── video_transcription.txt        # Con timestamps
-├── video_transcription_clean.txt  # Post-procesada con GPT
-└── video_summary_client.txt       # Resumen según template
+├── video_transcription.txt        # Raw transcription
+├── video_transcription_clean.txt  # GPT post-processed
+└── video_summary_client.txt       # Summary per template
 ```
 
-## Arquitectura
+The folder is named after the video file's own creation date, not the date you run the tool.
+
+## Architecture
 
 ```
 meetingsgpt/
 ├── cli.py          # CLI (Typer)
-├── config.py       # Configuración y templates (Pydantic)
-├── pipeline.py     # Orquestador del pipeline
-├── audio.py        # Extracción ffmpeg + chunking
-├── transcribe.py   # Transcripción con OpenAI Whisper API
-└── summarize.py    # Resumen map-reduce + post-procesamiento
+├── config.py       # Configuration and templates (Pydantic)
+├── pipeline.py     # Pipeline orchestrator
+├── audio.py        # ffmpeg extraction + chunking
+├── transcribe.py   # Transcription via OpenAI Whisper API
+├── summarize.py    # Map-reduce summarization + post-processing
+└── utils.py        # Shared retry/sentence-splitting helpers
 ```
+
+## License
+
+[MIT](LICENSE)

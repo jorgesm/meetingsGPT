@@ -9,21 +9,17 @@ from pathlib import Path
 
 from meetingsgpt.audio import extract_audio, split_audio
 from meetingsgpt.config import (
+    SCRIPT_DIR,
     TemplatesRegistry,
     ensure_ffmpeg,
     get_openai_key,
+    load_templates,
     load_vocabulary,
 )
 from meetingsgpt.summarize import DEFAULT_MODEL, post_process_transcription, summarize_text
-from meetingsgpt.transcribe import (
-    TranscriptionSegment,
-    WhisperAPIBackend,
-    transcribe_chunks,
-)
+from meetingsgpt.transcribe import WhisperAPIBackend, transcribe_chunks
 
 logger = logging.getLogger(__name__)
-
-SCRIPT_DIR = Path(__file__).parent.parent
 
 
 def _get_recording_date(path: Path) -> str:
@@ -33,12 +29,12 @@ def _get_recording_date(path: Path) -> str:
     return datetime.fromtimestamp(timestamp).strftime("%Y%m%d")
 
 
-def _segments_to_text(segments: list[TranscriptionSegment], with_timestamps: bool) -> str:
-    return "\n".join(seg.formatted(with_timestamps=with_timestamps) for seg in segments)
+def _segments_to_text(segments: list[str]) -> str:
+    return "\n".join(segments)
 
 
-def _segments_to_plain_text(segments: list[TranscriptionSegment]) -> str:
-    return " ".join(seg.text for seg in segments)
+def _segments_to_plain_text(segments: list[str]) -> str:
+    return " ".join(segments)
 
 
 def process(
@@ -55,7 +51,6 @@ def process(
     model: str = DEFAULT_MODEL,
     max_workers: int = 4,
     post_process: bool = True,
-    timestamps: bool = True,
     vocabulary_path: Path | None = None,
 ) -> None:
     """Run the full meeting processing pipeline."""
@@ -63,7 +58,7 @@ def process(
 
     video_path = Path(video_path)
     if not video_path.is_file():
-        raise FileNotFoundError(f"Video no encontrado: {video_path}")
+        raise FileNotFoundError(f"Video not found: {video_path}")
 
     # Output directory
     recording_date = _get_recording_date(video_path)
@@ -73,6 +68,7 @@ def process(
 
     audio_path = out_dir / f"{video_path.stem}.mp3"
     chunk_folder = out_dir / "chunks"
+    api_key = get_openai_key()
 
     try:
         # Step 1: Extract audio
@@ -81,10 +77,9 @@ def process(
         # Step 2: Load vocabulary hints
         vocabulary = load_vocabulary(vocabulary_path)
         if vocabulary:
-            logger.info(f"Vocabulario cargado: {vocabulary[:100]}...")
+            logger.info(f"Vocabulary loaded: {vocabulary[:100]}...")
 
         # Step 3: Chunk and transcribe (parallel)
-        api_key = get_openai_key()
         chunks = split_audio(
             audio_path,
             chunk_folder,
@@ -94,33 +89,25 @@ def process(
         )
         backend = WhisperAPIBackend(api_key=api_key)
 
-        # Calculate time offsets for each chunk (approximate)
-        chunk_time_offsets: list[float] | None = None
-        if not use_silence:
-            step_ms = max(chunk_ms - overlap_ms, 1)
-            chunk_time_offsets = [i * step_ms / 1000.0 for i in range(len(chunks))]
-
         segments = transcribe_chunks(
             backend,
             chunks,
             language,
             vocabulary=vocabulary,
             max_workers=max_workers,
-            chunk_time_offsets=chunk_time_offsets,
         )
 
         if not segments:
-            logger.error("No se obtuvo transcripción.")
+            logger.error("No transcription was produced.")
             return
 
         # Build text outputs
-        transcription_with_ts = _segments_to_text(segments, with_timestamps=timestamps)
+        transcription_raw = _segments_to_text(segments)
         transcription_plain = _segments_to_plain_text(segments)
 
         # Step 4: Post-process transcription
         if post_process and not transcribe_only:
-            logger.info("Post-procesando transcripción con GPT...")
-            api_key = get_openai_key()
+            logger.info("Post-processing transcription with GPT...")
             transcription_clean = post_process_transcription(
                 transcription_plain,
                 api_key=api_key,
@@ -131,24 +118,21 @@ def process(
             transcription_clean = transcription_plain
 
         # Save transcriptions
-        _save(out_dir, output_stem, "transcription", transcription_with_ts)
+        _save(out_dir, output_stem, "transcription", transcription_raw)
         if transcription_clean != transcription_plain:
             _save(out_dir, output_stem, "transcription_clean", transcription_clean)
 
         if transcribe_only:
-            logger.info("Solo transcripción. Fin.")
+            logger.info("Transcription only. Done.")
             return
 
         # Step 5: Summarize
         if templates is None:
-            from meetingsgpt.config import load_templates
-
             templates = load_templates()
 
         type_key, template = templates.get_template(summary_type, language=language)
-        logger.info(f"Resumiendo con template '{template.name}' (modelo: {model})")
+        logger.info(f"Summarizing with template '{template.name}' (model: {model})")
 
-        api_key = get_openai_key()
         summary = summarize_text(
             transcription_clean,
             template.prompt,
@@ -158,33 +142,33 @@ def process(
 
         if summary:
             _save(out_dir, output_stem, f"summary_{type_key}", summary)
-            logger.info("Transcripción y resumen guardados correctamente.")
+            logger.info("Transcription and summary saved successfully.")
         else:
-            logger.error("No se pudo generar el resumen.")
+            logger.error("Could not generate the summary.")
 
     except Exception:
-        logger.exception("Error en el pipeline.")
+        logger.exception("Pipeline failed.")
+        raise
     finally:
-        _cleanup(out_dir, audio_path, chunk_folder, keep_intermediate)
+        _cleanup(audio_path, chunk_folder, keep_intermediate)
 
 
 def _save(out_dir: Path, stem: str, suffix: str, content: str) -> None:
     path = out_dir / f"{stem}_{suffix}.txt"
     try:
         path.write_text(content, encoding="utf-8")
-        logger.info(f"{suffix} guardado en {path}")
+        logger.info(f"{suffix} saved to {path}")
     except Exception:
-        logger.exception(f"Error guardando {suffix}")
+        logger.exception(f"Error saving {suffix}")
 
 
 def _cleanup(
-    out_dir: Path,
     audio_path: Path,
     chunk_folder: Path,
     keep_intermediate: bool,
 ) -> None:
     if keep_intermediate:
-        logger.info("Manteniendo archivos intermedios.")
+        logger.info("Keeping intermediate files.")
         return
     try:
         if audio_path.exists():
@@ -192,4 +176,4 @@ def _cleanup(
         if chunk_folder.exists():
             shutil.rmtree(chunk_folder)
     except Exception:
-        logger.exception("Error durante limpieza.")
+        logger.exception("Error during cleanup.")

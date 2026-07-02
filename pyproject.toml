@@ -1,7 +1,7 @@
 [project]
 name = "meetingsgpt"
 version = "0.2.0"
-description = "Transcribe y resume vídeos de reuniones con Whisper + GPT"
+description = "Transcribe and summarize meeting videos with Whisper + GPT"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

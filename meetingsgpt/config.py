@@ -52,7 +52,7 @@ class TemplatesRegistry(BaseModel):
         key = summary_type or self.default
         if key not in self.types:
             available = list(self.types.keys())
-            raise ValueError(f"Tipo de resumen '{key}' no existe. Disponibles: {available}")
+            raise ValueError(f"Summary type '{key}' does not exist. Available: {available}")
 
         template = self.types[key]
 
@@ -76,13 +76,13 @@ class TemplatesRegistry(BaseModel):
 def load_templates(path: Path = TEMPLATES_PATH) -> TemplatesRegistry:
     """Load and validate summary templates from YAML."""
     if not path.exists():
-        raise FileNotFoundError(f"templates.yaml no encontrado: {path}")
+        raise FileNotFoundError(f"templates.yaml not found: {path}")
 
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     if not raw:
-        raise ValueError("templates.yaml está vacío.")
+        raise ValueError("templates.yaml is empty.")
 
     default_type = raw.pop("default", None)
     base_rules = raw.pop("base_rules", "")
@@ -90,9 +90,9 @@ def load_templates(path: Path = TEMPLATES_PATH) -> TemplatesRegistry:
 
     for name, cfg in raw.items():
         if not isinstance(cfg, dict):
-            raise ValueError(f"Tipo '{name}' debe ser un diccionario.")
+            raise ValueError(f"Type '{name}' must be a dictionary.")
         if "prompt" not in cfg or not cfg["prompt"].strip():
-            raise ValueError(f"Tipo '{name}' debe tener un campo 'prompt' no vacío.")
+            raise ValueError(f"Type '{name}' must have a non-empty 'prompt' field.")
         template_types[name] = TemplateConfig(
             name=cfg.get("name", name),
             description=cfg.get("description", ""),
@@ -100,15 +100,15 @@ def load_templates(path: Path = TEMPLATES_PATH) -> TemplatesRegistry:
         )
 
     if not template_types:
-        raise ValueError("templates.yaml debe definir al menos un tipo de resumen.")
+        raise ValueError("templates.yaml must define at least one summary type.")
 
     if default_type is None:
         default_type = next(iter(template_types))
-        logger.warning(f"No se definió 'default' en templates.yaml. Usando '{default_type}'.")
+        logger.warning(f"No 'default' defined in templates.yaml. Using '{default_type}'.")
     elif default_type not in template_types:
         raise ValueError(
-            f"Tipo por defecto '{default_type}' no existe. "
-            f"Tipos disponibles: {list(template_types.keys())}"
+            f"Default type '{default_type}' does not exist. "
+            f"Available types: {list(template_types.keys())}"
         )
 
     return TemplatesRegistry(default=default_type, base_rules=base_rules, types=template_types)
@@ -123,8 +123,8 @@ def ensure_ffmpeg() -> None:
     """Raise if ffmpeg is not installed."""
     if shutil.which("ffmpeg") is None:
         raise EnvironmentError(
-            "ffmpeg no está instalado o no está en PATH. "
-            "Instálalo y asegúrate de que 'ffmpeg' es accesible."
+            "ffmpeg is not installed or not in PATH. "
+            "Install it and make sure 'ffmpeg' is accessible."
         )
 
 

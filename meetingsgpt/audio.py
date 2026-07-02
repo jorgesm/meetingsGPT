@@ -25,10 +25,10 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
     Returns the output audio path.
     """
     if output_path.exists():
-        logger.info(f"Audio ya existe en {output_path}. Saltando extracción.")
+        logger.info(f"Audio already exists at {output_path}. Skipping extraction.")
         return output_path
 
-    logger.info(f"Extrayendo audio de {video_path} -> {output_path}")
+    logger.info(f"Extracting audio from {video_path} -> {output_path}")
     result = subprocess.run(
         [
             "ffmpeg",
@@ -46,9 +46,9 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg falló: {result.stderr[:500]}")
+        raise RuntimeError(f"ffmpeg failed: {result.stderr[:500]}")
 
-    logger.info(f"Audio extraído en {output_path}")
+    logger.info(f"Audio extracted to {output_path}")
     return output_path
 
 
@@ -69,7 +69,7 @@ def _load_manifest(chunk_folder: Path) -> dict | None:
     try:
         return json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
-        logger.warning("Error leyendo chunk manifest; se regenerarán los chunks.")
+        logger.warning("Error reading chunk manifest; chunks will be regenerated.")
         return None
 
 
@@ -95,7 +95,7 @@ def _save_manifest(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
     except Exception:
-        logger.warning("Error guardando chunk manifest.")
+        logger.warning("Error saving chunk manifest.")
 
 
 def _chunks_cache_valid(
@@ -110,7 +110,7 @@ def _chunks_cache_valid(
         return False
     try:
         if _get_audio_fingerprint(audio_path) != manifest.get("audio", {}):
-            logger.info("Audio cambió; regenerando chunks.")
+            logger.info("Audio changed; regenerating chunks.")
             return False
         params = manifest.get("params", {})
         if (
@@ -118,12 +118,12 @@ def _chunks_cache_valid(
             or params.get("overlap_ms") != overlap_ms
             or params.get("use_silence") != use_silence
         ):
-            logger.info("Parámetros de chunking cambiaron; regenerando chunks.")
+            logger.info("Chunking parameters changed; regenerating chunks.")
             return False
         expected = manifest.get("chunk_count", 0)
         actual = len(list(chunk_folder.glob("chunk_*.mp3")))
         if actual != expected:
-            logger.info("Cantidad de chunks no coincide; regenerando.")
+            logger.info("Chunk count mismatch; regenerating.")
             return False
         return True
     except Exception:
@@ -152,20 +152,20 @@ def split_audio(
 
     cache_valid = _chunks_cache_valid(chunk_folder, audio_path, chunk_ms, overlap_ms, use_silence)
     if existing and cache_valid:
-        logger.info(f"Reutilizando {len(existing)} chunks en caché.")
+        logger.info(f"Reusing {len(existing)} cached chunks.")
         return existing
 
     # Clear stale chunks
     for old in existing:
         old.unlink()
 
-    logger.info(f"Dividiendo audio en chunks desde {audio_path}")
+    logger.info(f"Splitting audio into chunks from {audio_path}")
     audio = AudioSegment.from_file(str(audio_path))
     paths: list[Path] = []
 
     with Progress() as progress:
         if use_silence:
-            task = progress.add_task("Dividiendo por silencios...", total=None)
+            task = progress.add_task("Splitting by silence...", total=None)
             parts = split_on_silence(
                 audio,
                 min_silence_len=600,
@@ -183,7 +183,7 @@ def split_audio(
             step = max(chunk_ms - overlap_ms, 1)
             total = len(audio)
             num_chunks = (total + step - 1) // step
-            task = progress.add_task("Dividiendo por duración...", total=num_chunks)
+            task = progress.add_task("Splitting by fixed duration...", total=num_chunks)
             i = 0
             start = 0
             while start < total:
@@ -201,5 +201,5 @@ def split_audio(
     if paths:
         _save_manifest(chunk_folder, audio_path, len(paths), chunk_ms, overlap_ms, use_silence)
 
-    logger.info(f"Audio dividido en {len(paths)} chunks.")
+    logger.info(f"Audio split into {len(paths)} chunks.")
     return paths

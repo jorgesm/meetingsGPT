@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import re
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Protocol
@@ -12,36 +11,9 @@ from typing import Protocol
 from openai import OpenAI, OpenAIError
 from rich.progress import Progress
 
+from meetingsgpt.utils import retry_openai_call, split_sentences
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Transcription result
-# ---------------------------------------------------------------------------
-
-
-class TranscriptionSegment:
-    """A segment of transcription with optional timestamp."""
-
-    def __init__(self, text: str, start: float | None = None, end: float | None = None):
-        self.text = text
-        self.start = start
-        self.end = end
-
-    def formatted(self, with_timestamps: bool = True) -> str:
-        if with_timestamps and self.start is not None:
-            ts = _format_timestamp(self.start)
-            return f"[{ts}] {self.text}"
-        return self.text
-
-
-def _format_timestamp(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -55,22 +27,7 @@ class TranscriptionBackend(Protocol):
         audio_path: Path,
         language: str,
         initial_prompt: str = "",
-    ) -> list[TranscriptionSegment]: ...
-
-
-# ---------------------------------------------------------------------------
-# Retry helper
-# ---------------------------------------------------------------------------
-
-
-def _retry(fn, tries: int = 3, base: float = 1.5):
-    for i in range(tries):
-        try:
-            return fn()
-        except OpenAIError:
-            if i == tries - 1:
-                raise
-            time.sleep(base**i)
+    ) -> list[str]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +36,7 @@ def _retry(fn, tries: int = 3, base: float = 1.5):
 
 
 class WhisperAPIBackend:
-    """Transcription via OpenAI Whisper API with timestamps."""
+    """Transcription via the OpenAI Whisper API."""
 
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
@@ -89,20 +46,14 @@ class WhisperAPIBackend:
         audio_path: Path,
         language: str,
         initial_prompt: str = "",
-    ) -> list[TranscriptionSegment]:
+    ) -> list[str]:
         # Check per-chunk cache
         cache_path = audio_path.with_suffix(".json")
         if cache_path.exists():
             try:
-                import json
-
-                data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return [
-                    TranscriptionSegment(s["text"], s.get("start"), s.get("end"))
-                    for s in data
-                ]
+                return json.loads(cache_path.read_text(encoding="utf-8"))
             except Exception:
-                logger.warning(f"Error leyendo caché {cache_path}; re-transcribiendo.")
+                logger.warning(f"Error reading cache {cache_path}; re-transcribing.")
 
         def _call():
             with open(audio_path, "rb") as f:
@@ -115,26 +66,20 @@ class WhisperAPIBackend:
                 )
 
         try:
-            result = _retry(_call)
-            # gpt-4o-mini-transcribe returns plain text (no per-segment timestamps)
-            # Timestamps are added at chunk level by the orchestrator
+            result = retry_openai_call(_call)
             text = result.strip() if isinstance(result, str) else str(result).strip()
-            segments = [TranscriptionSegment(text=text)] if text else []
+            segments = [text] if text else []
 
-            # Save cache
             try:
-                import json
-
-                cache_data = [{"text": s.text, "start": s.start, "end": s.end} for s in segments]
                 cache_path.write_text(
-                    json.dumps(cache_data, ensure_ascii=False), encoding="utf-8"
+                    json.dumps(segments, ensure_ascii=False), encoding="utf-8"
                 )
             except Exception:
-                logger.warning("Error guardando caché de transcripción.")
+                logger.warning("Error saving transcription cache.")
 
             return segments
         except OpenAIError:
-            logger.exception(f"Error de API transcribiendo {audio_path}")
+            logger.exception(f"API error transcribing {audio_path}")
             return []
 
 
@@ -145,7 +90,7 @@ class WhisperAPIBackend:
 
 def _extract_last_sentences(text: str, n: int = 3) -> str:
     """Extract the last N complete sentences for context."""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    sentences = split_sentences(text.strip())
     return " ".join(sentences[-n:]) if sentences else text[-480:]
 
 
@@ -155,33 +100,22 @@ def transcribe_chunks(
     language: str,
     vocabulary: str = "",
     max_workers: int = 4,
-    chunk_time_offsets: list[float] | None = None,
-) -> list[TranscriptionSegment]:
+) -> list[str]:
     """Transcribe a list of audio chunks in parallel and return unified segments."""
     if max_workers > 1 and len(chunks) > 1:
-        return _transcribe_parallel(
-            backend, chunks, language, vocabulary, max_workers, chunk_time_offsets
-        )
+        return _transcribe_parallel(backend, chunks, language, vocabulary, max_workers)
 
     # Sequential fallback (single worker)
-    all_segments: list[TranscriptionSegment] = []
+    all_segments: list[str] = []
     context = vocabulary
     with Progress() as progress:
-        task = progress.add_task("Transcribiendo...", total=len(chunks))
-        for i, chunk_path in enumerate(chunks):
-            offset = (chunk_time_offsets[i] if chunk_time_offsets else 0.0) or 0.0
+        task = progress.add_task("Transcribing...", total=len(chunks))
+        for chunk_path in chunks:
             segments = backend.transcribe(chunk_path, language, initial_prompt=context)
-
-            for seg in segments:
-                if seg.start is not None:
-                    seg.start += offset
-                if seg.end is not None:
-                    seg.end += offset
-
             all_segments.extend(segments)
 
             if segments:
-                chunk_text = " ".join(s.text for s in segments)
+                chunk_text = " ".join(segments)
                 context = _extract_last_sentences(chunk_text)
                 if vocabulary:
                     context = f"{vocabulary}. {context}"
@@ -197,13 +131,12 @@ def _transcribe_parallel(
     language: str,
     vocabulary: str,
     max_workers: int,
-    chunk_time_offsets: list[float] | None,
-) -> list[TranscriptionSegment]:
+) -> list[str]:
     """Parallel transcription for API backends."""
-    results: list[list[TranscriptionSegment]] = [[] for _ in chunks]
+    results: list[list[str]] = [[] for _ in chunks]
 
     with Progress() as progress:
-        task = progress.add_task("Transcribiendo en paralelo...", total=len(chunks))
+        task = progress.add_task("Transcribing in parallel...", total=len(chunks))
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
@@ -213,19 +146,12 @@ def _transcribe_parallel(
             for future in as_completed(futures):
                 idx = futures[future]
                 try:
-                    segments = future.result()
-                    offset = (chunk_time_offsets[idx] if chunk_time_offsets else 0.0) or 0.0
-                    for seg in segments:
-                        if seg.start is not None:
-                            seg.start += offset
-                        if seg.end is not None:
-                            seg.end += offset
-                    results[idx] = segments
+                    results[idx] = future.result()
                 except Exception:
-                    logger.exception(f"Error transcribiendo chunk {idx + 1}")
+                    logger.exception(f"Error transcribing chunk {idx + 1}")
                 progress.update(task, advance=1)
 
-    all_segments: list[TranscriptionSegment] = []
+    all_segments: list[str] = []
     for chunk_segments in results:
         all_segments.extend(chunk_segments)
 

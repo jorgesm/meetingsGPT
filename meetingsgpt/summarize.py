@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-import time
 
 import tiktoken
 from openai import OpenAI, OpenAIError
 from rich.progress import Progress
+
+from meetingsgpt.config import LANGUAGE_NAMES
+from meetingsgpt.utils import retry_openai_call, split_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def _split_by_tokens(
 
             # If a single paragraph exceeds max_tokens, split by sentences
             if para_tokens > max_tokens:
-                sentences = _split_into_sentences(para)
+                sentences = split_sentences(para)
                 for sentence in sentences:
                     s_tokens = len(enc.encode(sentence))
                     if current_tokens + s_tokens <= max_tokens:
@@ -71,29 +73,6 @@ def _split_by_tokens(
         blocks.append("\n\n".join(current_block))
 
     return blocks if blocks else [text]
-
-
-def _split_into_sentences(text: str) -> list[str]:
-    """Split text into sentences at period/question/exclamation boundaries."""
-    import re
-
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    return [p for p in parts if p.strip()]
-
-
-# ---------------------------------------------------------------------------
-# Retry helper
-# ---------------------------------------------------------------------------
-
-
-def _retry(fn, tries: int = 3, base: float = 1.5):
-    for i in range(tries):
-        try:
-            return fn()
-        except OpenAIError:
-            if i == tries - 1:
-                raise
-            time.sleep(base**i)
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +100,8 @@ def summarize_text(
     client = OpenAI(api_key=api_key)
 
     def _summarize_block(block: str) -> str:
+        # Prompt kept in Spanish: the templates it composes with produce
+        # Spanish-language business documents by design.
         user_prompt = f"Las notas de la última reunión son:\n{block}"
 
         def _call():
@@ -132,35 +113,35 @@ def summarize_text(
                 ],
             )
 
-        completion = _retry(_call)
+        completion = retry_openai_call(_call)
         return completion.choices[0].message.content.strip()
 
     try:
         blocks = _split_by_tokens(text, max_tokens_per_block, model)
 
         if len(blocks) == 1:
-            logger.info("Texto cabe en un solo bloque. Resumiendo directamente.")
+            logger.info("Text fits in a single block. Summarizing directly.")
             return _summarize_block(blocks[0])
 
         # Map phase
-        logger.info(f"Map-reduce: {len(blocks)} bloques.")
+        logger.info(f"Map-reduce: {len(blocks)} blocks.")
         partials: list[str] = []
         with Progress() as progress:
-            task = progress.add_task("Resumiendo bloques...", total=len(blocks))
+            task = progress.add_task("Summarizing blocks...", total=len(blocks))
             for block in blocks:
                 partials.append(_summarize_block(block))
                 progress.update(task, advance=1)
 
         # Reduce phase
-        logger.info("Fase reduce: unificando resúmenes parciales.")
+        logger.info("Reduce phase: merging partial summaries.")
         final_input = "\n\n".join(partials)
         return _summarize_block(final_input)
 
     except OpenAIError:
-        logger.exception("Error de API durante resumen.")
+        logger.exception("API error during summarization.")
         return ""
     except Exception:
-        logger.exception("Error inesperado durante resumen.")
+        logger.exception("Unexpected error during summarization.")
         return ""
 
 
@@ -176,15 +157,16 @@ def post_process_transcription(
     language: str = "es",
     model: str = DEFAULT_MODEL,
 ) -> str:
-    """Clean up Whisper transcription using GPT.
+    """Clean up the raw transcription using GPT.
 
     Fixes common issues: punctuation, capitalization, proper nouns,
     removes duplicate text from chunk overlaps.
     """
     client = OpenAI(api_key=api_key)
 
-    lang_name = {"es": "español", "en": "inglés"}.get(language, language)
+    lang_name = LANGUAGE_NAMES.get(language, language)
 
+    # Prompt kept in Spanish: it edits Spanish-language meeting transcriptions.
     system_prompt = f"""Eres un editor de transcripciones de reuniones en {lang_name}.
 
 Tu tarea es limpiar y mejorar la transcripción manteniendo el contenido EXACTO.
@@ -198,45 +180,36 @@ REGLAS ESTRICTAS:
 - Si detectas cambios de hablante, márcalos con líneas separadas
 - Mantén TODO el contenido original, solo mejora la forma"""
 
-    # Split into manageable chunks for post-processing
     blocks = _split_by_tokens(text, max_tokens=3000, model=model)
 
-    if len(blocks) == 1:
+    def _clean_block(block: str) -> str:
         def _call():
             return client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
+                    {"role": "user", "content": block},
                 ],
             )
 
+        return retry_openai_call(_call).choices[0].message.content.strip()
+
+    if len(blocks) == 1:
         try:
-            result = _retry(_call)
-            return result.choices[0].message.content.strip()
+            return _clean_block(text)
         except Exception:
-            logger.warning("Error en post-procesamiento; devolviendo transcripción original.")
+            logger.warning("Error during post-processing; returning original transcription.")
             return text
 
     # Process blocks preserving order
     cleaned_parts: list[str] = []
     with Progress() as progress:
-        task = progress.add_task("Post-procesando transcripción...", total=len(blocks))
+        task = progress.add_task("Post-processing transcription...", total=len(blocks))
         for block in blocks:
-            def _call(b=block):
-                return client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": b},
-                    ],
-                )
-
             try:
-                result = _retry(_call)
-                cleaned_parts.append(result.choices[0].message.content.strip())
+                cleaned_parts.append(_clean_block(block))
             except Exception:
-                logger.warning("Error en post-procesamiento de bloque; usando original.")
+                logger.warning("Error post-processing block; using original.")
                 cleaned_parts.append(block)
             progress.update(task, advance=1)
 
