@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-meetingsGPT is a CLI tool that transcribes and summarizes meeting videos: extract audio (ffmpeg) → chunk it → transcribe via OpenAI's `gpt-4o-mini-transcribe` → optionally clean up the transcription with GPT → summarize with a template-driven prompt. Built with Typer, dependency-managed with `uv`.
+meetingsGPT is a CLI tool that transcribes and summarizes meeting videos: extract audio (ffmpeg) → chunk it → transcribe via OpenAI's `gpt-transcribe` → optionally clean up the transcription with GPT → summarize with a template-driven prompt. Built with Typer, dependency-managed with `uv`.
 
 ## Commands
 
@@ -13,13 +13,13 @@ meetingsGPT is a CLI tool that transcribes and summarizes meeting videos: extrac
 uv sync
 cp .env.example .env   # add OPENAI_API_KEY
 
-# Run the pipeline
-uv run python -m meetingsgpt run /path/to/video.mov
-uv run python -m meetingsgpt run /path/to/video.mov --type internal --language en
-uv run python -m meetingsgpt run /path/to/video.mov --transcribe-only
+# Run the pipeline (options before the path, so the path is the last, easy-to-swap token)
+uv run meetingsgpt run /path/to/video.mov
+uv run meetingsgpt run --type internal --language en /path/to/video.mov
+uv run meetingsgpt run --transcribe-only /path/to/video.mov
 
 # List available summary types (works without an API key)
-uv run python -m meetingsgpt list-types
+uv run meetingsgpt list-types
 
 # Lint
 uv run ruff check meetingsgpt/
@@ -58,11 +58,11 @@ Everything flows through `pipeline.process()`. Each output goes to `outputs/<YYY
 
 ### Transcription context continuity
 
-Whisper has no memory across chunks. `transcribe.py` carries context forward between chunks: `_extract_last_sentences()` pulls the tail of the previous chunk's output and feeds it (prefixed with domain vocabulary) as `initial_prompt` to the next chunk — but only in the sequential path (single worker). The parallel path (`_transcribe_parallel`, used whenever `max_workers > 1`) has no cross-chunk context since chunks are transcribed concurrently; it passes only the static vocabulary as `initial_prompt`.
+`gpt-transcribe` has no memory across chunks. `transcribe.py` carries context forward between chunks: `_extract_last_sentences()` pulls the tail of the previous chunk's output and feeds it as the `prompt` param to the next chunk — but only in the sequential path (single worker). The parallel path (`_transcribe_parallel`, used whenever `max_workers > 1`) has no cross-chunk context since chunks are transcribed concurrently; it passes an empty `prompt`. Domain vocabulary (`config.load_vocabulary()`) is independent of this continuity context — it's always sent via the `keywords` param on every chunk, in both paths.
 
 ### Post-processing vs. summarization are separate GPT calls
 
-`post_process_transcription()` cleans the raw transcription (punctuation, dedup from chunk overlap) while explicitly preserving all content. `summarize_text()` is a distinct map-reduce pass over the (cleaned) transcription using the template's prompt as the system prompt. Both use the same `_split_by_tokens()` helper from `summarize.py` to stay under `DEFAULT_MAX_TOKENS_PER_BLOCK` (3000), splitting on paragraph/sentence boundaries via `utils.split_sentences()`.
+`post_process_transcription()` cleans the raw transcription (punctuation, dedup from chunk overlap) while explicitly preserving all content. `summarize_text()` is a distinct map-reduce pass over the (cleaned) transcription using the template's prompt as the system prompt. Both use the same `_split_by_tokens()` helper from `summarize.py` to stay under `DEFAULT_MAX_TOKENS_PER_BLOCK` (3000), splitting on paragraph/sentence boundaries via `utils.split_sentences()`, and share the `_chat_call()` / `_map_blocks_with_progress()` helpers for the actual chat-completion calls and progress reporting.
 
 ## Conventions
 

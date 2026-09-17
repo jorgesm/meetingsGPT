@@ -9,7 +9,7 @@ A CLI tool that turns meeting recordings into clean, ready-to-share summaries: e
 ## Features
 
 - **One command, full pipeline**: video in, transcription + summary out
-- **Fast, parallel transcription** via OpenAI's `gpt-4o-mini-transcribe`, chunked and processed concurrently
+- **Fast, parallel transcription** via OpenAI's `gpt-transcribe`, chunked and processed concurrently
 - **Customizable summary templates** (`client`, `internal`, `detailed`, or your own) defined in a single YAML file — no code changes needed to add a new one
 - **Smart caching**: safe to re-run — already-processed audio chunks and transcriptions aren't redone (or re-billed)
 - **Domain vocabulary hints** to improve accuracy on proper nouns, acronyms, and jargon
@@ -32,18 +32,20 @@ cp .env.example .env
 
 ## Quick usage
 
+Options go right after `run`, with the video path last — handy when you're swapping only the path in a command you keep reusing:
+
 ```bash
 # Summary with the default type (client)
-python -m meetingsgpt run /path/to/video.mov
+uv run meetingsgpt run /path/to/video.mov
 
-# Specify a summary type
-python -m meetingsgpt run /path/to/video.mov --type internal
+# Specify a summary type (path stays as the last, easy-to-swap token)
+uv run meetingsgpt run --type internal /path/to/video.mov
 
 # Transcribe only (no summary)
-python -m meetingsgpt run /path/to/video.mov --transcribe-only
+uv run meetingsgpt run --transcribe-only /path/to/video.mov
 
 # List available summary types
-python -m meetingsgpt list-types
+uv run meetingsgpt list-types
 ```
 
 ## Summary types
@@ -64,7 +66,7 @@ You can add new types by editing `templates.yaml`.
 |------------------------|---------------------------------------------------------|
 | `--type`, `-t`         | Summary type to generate                                |
 | `--language`, `-l`     | Transcription language (default: `es`)                  |
-| `--model`, `-m`        | GPT model for summarization (default: `gpt-5.4-mini`)   |
+| `--model`, `-m`        | GPT model for summarization (default: `gpt-5.6-luna`)   |
 | `--workers`, `-w`      | Parallel threads for transcription (default: 4)         |
 | `--no-post-process`    | Disable GPT cleanup of the transcription                |
 | `--vocabulary`         | File with domain vocabulary (one term per line)         |
@@ -74,7 +76,7 @@ You can add new types by editing `templates.yaml`.
 | `--overlap-ms`         | Overlap between chunks in ms (default: 5000)            |
 | `--transcribe-only`    | Only transcribe, skip summarization                     |
 
-Run `python -m meetingsgpt run --help` for the full, always-up-to-date list.
+Run `uv run meetingsgpt run --help` for the full, always-up-to-date list.
 
 ## Domain vocabulary
 
@@ -104,7 +106,7 @@ meetingsgpt/
 ├── config.py       # Configuration and templates (Pydantic)
 ├── pipeline.py     # Pipeline orchestrator
 ├── audio.py        # ffmpeg extraction + chunking
-├── transcribe.py   # Transcription via OpenAI Whisper API
+├── transcribe.py   # Transcription via OpenAI gpt-transcribe API
 ├── summarize.py    # Map-reduce summarization + post-processing
 └── utils.py        # Shared retry/sentence-splitting helpers
 ```

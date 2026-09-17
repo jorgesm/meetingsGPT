@@ -1,4 +1,4 @@
-"""Transcription backend: OpenAI Whisper API."""
+"""Transcription backend: OpenAI gpt-transcribe API."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Protocol
 
 from openai import OpenAI, OpenAIError
 from rich.progress import Progress
@@ -17,26 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Backend protocol
-# ---------------------------------------------------------------------------
-
-
-class TranscriptionBackend(Protocol):
-    def transcribe(
-        self,
-        audio_path: Path,
-        language: str,
-        initial_prompt: str = "",
-    ) -> list[str]: ...
-
-
-# ---------------------------------------------------------------------------
-# OpenAI Whisper API backend
+# OpenAI gpt-transcribe backend
 # ---------------------------------------------------------------------------
 
 
 class WhisperAPIBackend:
-    """Transcription via the OpenAI Whisper API."""
+    """Transcription via the OpenAI gpt-transcribe API."""
 
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
@@ -46,6 +31,7 @@ class WhisperAPIBackend:
         audio_path: Path,
         language: str,
         initial_prompt: str = "",
+        keywords: list[str] | None = None,
     ) -> list[str]:
         # Check per-chunk cache
         cache_path = audio_path.with_suffix(".json")
@@ -58,16 +44,17 @@ class WhisperAPIBackend:
         def _call():
             with open(audio_path, "rb") as f:
                 return self.client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
+                    model="gpt-transcribe",
                     file=f,
-                    language=language,
-                    response_format="text",
+                    languages=[language],
+                    keywords=keywords or [],
+                    response_format="json",
                     prompt=initial_prompt if initial_prompt else "",
                 )
 
         try:
             result = retry_openai_call(_call)
-            text = result.strip() if isinstance(result, str) else str(result).strip()
+            text = result.text.strip()
             segments = [text] if text else []
 
             try:
@@ -95,30 +82,30 @@ def _extract_last_sentences(text: str, n: int = 3) -> str:
 
 
 def transcribe_chunks(
-    backend: TranscriptionBackend,
+    backend: WhisperAPIBackend,
     chunks: list[Path],
     language: str,
-    vocabulary: str = "",
+    vocabulary: list[str] | None = None,
     max_workers: int = 4,
 ) -> list[str]:
     """Transcribe a list of audio chunks in parallel and return unified segments."""
+    vocabulary = vocabulary or []
     if max_workers > 1 and len(chunks) > 1:
         return _transcribe_parallel(backend, chunks, language, vocabulary, max_workers)
 
     # Sequential fallback (single worker)
     all_segments: list[str] = []
-    context = vocabulary
+    context = ""
     with Progress() as progress:
         task = progress.add_task("Transcribing...", total=len(chunks))
         for chunk_path in chunks:
-            segments = backend.transcribe(chunk_path, language, initial_prompt=context)
+            segments = backend.transcribe(
+                chunk_path, language, initial_prompt=context, keywords=vocabulary
+            )
             all_segments.extend(segments)
 
             if segments:
-                chunk_text = " ".join(segments)
-                context = _extract_last_sentences(chunk_text)
-                if vocabulary:
-                    context = f"{vocabulary}. {context}"
+                context = _extract_last_sentences(" ".join(segments))
 
             progress.update(task, advance=1)
 
@@ -126,10 +113,10 @@ def transcribe_chunks(
 
 
 def _transcribe_parallel(
-    backend: TranscriptionBackend,
+    backend: WhisperAPIBackend,
     chunks: list[Path],
     language: str,
-    vocabulary: str,
+    vocabulary: list[str],
     max_workers: int,
 ) -> list[str]:
     """Parallel transcription for API backends."""
@@ -140,7 +127,7 @@ def _transcribe_parallel(
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(backend.transcribe, chunk, language, vocabulary): i
+                pool.submit(backend.transcribe, chunk, language, "", vocabulary): i
                 for i, chunk in enumerate(chunks)
             }
             for future in as_completed(futures):

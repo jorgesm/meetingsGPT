@@ -13,7 +13,7 @@ from meetingsgpt.utils import retry_openai_call, split_sentences
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_MAX_TOKENS_PER_BLOCK = 3000
 
 
@@ -31,7 +31,7 @@ def _split_by_tokens(
     try:
         enc = tiktoken.encoding_for_model(model)
     except KeyError:
-        enc = tiktoken.get_encoding("cl100k_base")
+        enc = tiktoken.get_encoding("o200k_base")
 
     # Split into paragraphs first, then sentences within paragraphs
     paragraphs = text.split("\n\n")
@@ -76,6 +76,58 @@ def _split_by_tokens(
 
 
 # ---------------------------------------------------------------------------
+# Shared chat-completion helpers
+# ---------------------------------------------------------------------------
+
+
+def _chat_call(client: OpenAI, model: str, system_prompt: str, user_content: str) -> str:
+    """Run a single chat completion and return its stripped text content."""
+
+    def _call():
+        return client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        )
+
+    completion = retry_openai_call(_call)
+    return (completion.choices[0].message.content or "").strip()
+
+
+def _build_reduce_prompt(partials: list[str]) -> str:
+    """Build the reduce-phase prompt that merges partial summaries into one document.
+
+    Distinct from the map-phase prompt: partials are already-summarized fragments
+    of a single meeting, not raw transcript notes, and must be explicitly framed
+    as such — otherwise the model reads them as unrelated meetings and asks for
+    clarification instead of merging them.
+    """
+    numbered = "\n\n---\n\n".join(
+        f"[Fragmento {i} de {len(partials)}]\n{partial}" for i, partial in enumerate(partials, 1)
+    )
+    return (
+        f"A continuación tienes {len(partials)} resúmenes parciales generados a partir de "
+        "fragmentos CONSECUTIVOS de LA MISMA reunión (no son reuniones distintas). "
+        "Combínalos en un único documento coherente, siguiendo la estructura indicada en las "
+        "instrucciones, eliminando duplicados y fusionando la información relacionada entre "
+        f"fragmentos:\n\n{numbered}"
+    )
+
+
+def _map_blocks_with_progress(blocks: list[str], fn, description: str) -> list[str]:
+    """Apply fn to each block, showing a progress bar, preserving order."""
+    results: list[str] = []
+    with Progress() as progress:
+        task = progress.add_task(description, total=len(blocks))
+        for block in blocks:
+            results.append(fn(block))
+            progress.update(task, advance=1)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Summarization
 # ---------------------------------------------------------------------------
 
@@ -103,18 +155,7 @@ def summarize_text(
         # Prompt kept in Spanish: the templates it composes with produce
         # Spanish-language business documents by design.
         user_prompt = f"Las notas de la última reunión son:\n{block}"
-
-        def _call():
-            return client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-
-        completion = retry_openai_call(_call)
-        return completion.choices[0].message.content.strip()
+        return _chat_call(client, model, system_prompt, user_prompt)
 
     try:
         blocks = _split_by_tokens(text, max_tokens_per_block, model)
@@ -123,19 +164,11 @@ def summarize_text(
             logger.info("Text fits in a single block. Summarizing directly.")
             return _summarize_block(blocks[0])
 
-        # Map phase
         logger.info(f"Map-reduce: {len(blocks)} blocks.")
-        partials: list[str] = []
-        with Progress() as progress:
-            task = progress.add_task("Summarizing blocks...", total=len(blocks))
-            for block in blocks:
-                partials.append(_summarize_block(block))
-                progress.update(task, advance=1)
+        partials = _map_blocks_with_progress(blocks, _summarize_block, "Summarizing blocks...")
 
-        # Reduce phase
         logger.info("Reduce phase: merging partial summaries.")
-        final_input = "\n\n".join(partials)
-        return _summarize_block(final_input)
+        return _chat_call(client, model, system_prompt, _build_reduce_prompt(partials))
 
     except OpenAIError:
         logger.exception("API error during summarization.")
@@ -183,34 +216,16 @@ REGLAS ESTRICTAS:
     blocks = _split_by_tokens(text, max_tokens=3000, model=model)
 
     def _clean_block(block: str) -> str:
-        def _call():
-            return client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": block},
-                ],
-            )
-
-        return retry_openai_call(_call).choices[0].message.content.strip()
+        try:
+            return _chat_call(client, model, system_prompt, block)
+        except Exception:
+            logger.warning("Error post-processing block; using original.")
+            return block
 
     if len(blocks) == 1:
-        try:
-            return _clean_block(text)
-        except Exception:
-            logger.warning("Error during post-processing; returning original transcription.")
-            return text
+        return _clean_block(text)
 
-    # Process blocks preserving order
-    cleaned_parts: list[str] = []
-    with Progress() as progress:
-        task = progress.add_task("Post-processing transcription...", total=len(blocks))
-        for block in blocks:
-            try:
-                cleaned_parts.append(_clean_block(block))
-            except Exception:
-                logger.warning("Error post-processing block; using original.")
-                cleaned_parts.append(block)
-            progress.update(task, advance=1)
-
+    cleaned_parts = _map_blocks_with_progress(
+        blocks, _clean_block, "Post-processing transcription..."
+    )
     return "\n\n".join(cleaned_parts)
