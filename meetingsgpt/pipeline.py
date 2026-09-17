@@ -77,7 +77,7 @@ def process(
         # Step 2: Load vocabulary hints
         vocabulary = load_vocabulary(vocabulary_path)
         if vocabulary:
-            logger.info(f"Vocabulary loaded: {vocabulary[:100]}...")
+            logger.info(f"Vocabulary loaded: {len(vocabulary)} terms")
 
         # Step 3: Chunk and transcribe (parallel)
         chunks = split_audio(

@@ -136,14 +136,13 @@ def get_openai_key() -> str:
     return key
 
 
-def load_vocabulary(path: Path | None = None) -> str:
+def load_vocabulary(path: Path | None = None) -> list[str]:
     """Load domain vocabulary hints from a file (one term per line).
 
-    Returns a comma-separated string suitable for Whisper's initial_prompt.
+    Returns a list of terms suitable for gpt-transcribe's `keywords` parameter.
     """
     if path is None:
         path = SCRIPT_DIR / "vocabulary.txt"
     if not path.exists():
-        return ""
-    terms = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return ", ".join(terms)
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
