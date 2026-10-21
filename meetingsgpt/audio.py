@@ -147,16 +147,31 @@ def _chunks_cache_valid(
 def _merge_parts(parts: list[AudioSegment], max_ms: int) -> list[AudioSegment]:
     """Greedily join consecutive silence-split parts into chunks of at most ``max_ms``.
 
-    Each split point stays on a silence, but chunks are long enough to give the
-    transcription model context. A single part longer than ``max_ms`` is kept as is.
+    Split points stay on silences, but chunks are long enough to give the transcription
+    model context. A part longer than ``max_ms`` (no usable pause) is cut at fixed duration.
     """
-    merged: list[AudioSegment] = []
-    for part in parts:
-        if merged and len(merged[-1]) + len(part) <= max_ms:
-            merged[-1] += part
+    pieces = [part[i : i + max_ms] for part in parts for i in range(0, len(part), max_ms)]
+    groups: list[list[AudioSegment]] = []
+    group_ms = 0
+    for piece in pieces:
+        if groups and group_ms + len(piece) <= max_ms:
+            groups[-1].append(piece)
+            group_ms += len(piece)
         else:
-            merged.append(part)
-    return merged
+            groups.append([piece])
+            group_ms = len(piece)
+    return [_concat(group) for group in groups]
+
+
+def _concat(segments: list[AudioSegment]) -> AudioSegment:
+    """Join same-format segments with one copy (``+`` copies the accumulated audio each time)."""
+    first = segments[0]
+    return AudioSegment(
+        data=b"".join(segment.raw_data for segment in segments),
+        sample_width=first.sample_width,
+        frame_rate=first.frame_rate,
+        channels=first.channels,
+    )
 
 
 def split_audio(

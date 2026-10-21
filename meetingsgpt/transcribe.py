@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from openai import OpenAI, OpenAIError
+from openai import OpenAI
 from rich.progress import Progress
 
 from meetingsgpt.utils import retry_openai_call, split_sentences
@@ -52,22 +52,16 @@ class WhisperAPIBackend:
                     prompt=initial_prompt if initial_prompt else "",
                 )
 
+        result = retry_openai_call(_call)
+        text = result.text.strip()
+        segments = [text] if text else []
+
         try:
-            result = retry_openai_call(_call)
-            text = result.text.strip()
-            segments = [text] if text else []
+            cache_path.write_text(json.dumps(segments, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            logger.warning("Error saving transcription cache.")
 
-            try:
-                cache_path.write_text(
-                    json.dumps(segments, ensure_ascii=False), encoding="utf-8"
-                )
-            except Exception:
-                logger.warning("Error saving transcription cache.")
-
-            return segments
-        except OpenAIError:
-            logger.exception(f"API error transcribing {audio_path}")
-            return []
+        return segments
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +115,7 @@ def _transcribe_parallel(
 ) -> list[str]:
     """Parallel transcription for API backends."""
     results: list[list[str]] = [[] for _ in chunks]
+    failed: list[int] = []
 
     with Progress() as progress:
         task = progress.add_task("Transcribing in parallel...", total=len(chunks))
@@ -136,7 +131,11 @@ def _transcribe_parallel(
                     results[idx] = future.result()
                 except Exception:
                     logger.exception(f"Error transcribing chunk {idx + 1}")
+                    failed.append(idx + 1)
                 progress.update(task, advance=1)
+
+    if failed:
+        raise RuntimeError(f"Transcription failed for chunks {sorted(failed)}")
 
     all_segments: list[str] = []
     for chunk_segments in results:

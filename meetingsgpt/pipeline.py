@@ -38,7 +38,7 @@ def _segments_to_plain_text(segments: list[str]) -> str:
 
 
 def process(
-    video_path: str | Path,
+    input_path: str | Path,
     *,
     language: str = "es",
     keep_intermediate: bool = False,
@@ -56,23 +56,23 @@ def process(
     """Run the full meeting processing pipeline on a video or audio file."""
     ensure_ffmpeg()
 
-    video_path = Path(video_path)
-    if not video_path.is_file():
-        raise FileNotFoundError(f"File not found: {video_path}")
+    input_path = Path(input_path)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"File not found: {input_path}")
 
     # Output directory
-    recording_date = _get_recording_date(video_path)
-    output_stem = f"{recording_date}_{video_path.stem}"
+    recording_date = _get_recording_date(input_path)
+    output_stem = f"{recording_date}_{input_path.stem}"
     out_dir = SCRIPT_DIR / "outputs" / output_stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    audio_path = out_dir / f"{video_path.stem}.mp3"
+    audio_path = out_dir / f"{input_path.stem}.mp3"
     chunk_folder = out_dir / "chunks"
     api_key = get_openai_key()
 
     try:
         # Step 1: Extract audio
-        extract_audio(video_path, audio_path)
+        extract_audio(input_path, audio_path)
 
         # Step 2: Load vocabulary hints
         vocabulary = load_vocabulary(vocabulary_path)
@@ -147,7 +147,9 @@ def process(
             logger.error("Could not generate the summary.")
 
     except Exception:
-        logger.exception("Pipeline failed.")
+        # Intermediates hold the per-chunk transcription cache, so a rerun skips finished chunks
+        logger.exception("Pipeline failed; keeping intermediate files so a rerun resumes.")
+        keep_intermediate = True
         raise
     finally:
         _cleanup(audio_path, chunk_folder, keep_intermediate)

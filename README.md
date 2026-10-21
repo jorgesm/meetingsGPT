@@ -76,7 +76,7 @@ You can add new types by editing `templates.yaml`.
 | `--keep-intermediate`  | Keep intermediate files                                 |
 | `--no-silence`         | Use fixed duration instead of silence detection         |
 | `--chunk-ms`           | Max chunk duration in ms (default: 600000)              |
-| `--overlap-ms`         | Overlap between chunks in ms (default: 5000)            |
+| `--overlap-ms`         | Overlap between fixed-duration chunks in ms (default: 5000) |
 | `--transcribe-only`    | Only transcribe, skip summarization                     |
 
 Run `uv run meetingsgpt run --help` for the full, always-up-to-date list.
