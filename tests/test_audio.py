@@ -1,7 +1,7 @@
 from pydub import AudioSegment
 from pydub.generators import Sine
 
-from meetingsgpt.audio import _merge_parts
+from meetingsgpt.audio import _merge_parts, extract_audio
 
 
 def _tone(ms: int, freq: int = 440) -> AudioSegment:
@@ -37,3 +37,16 @@ def test_audio_is_preserved_in_order():
 
 def test_no_parts_yields_no_chunks():
     assert _merge_parts([], max_ms=1000, overlap_ms=0) == []
+
+
+def test_extracted_audio_is_not_reused_for_a_different_input(tmp_path):
+    first, second = tmp_path / "a" / "voice.wav", tmp_path / "b" / "voice.wav"
+    for path, ms in ((first, 1000), (second, 2000)):
+        path.parent.mkdir()
+        _tone(ms).export(str(path), format="wav")
+    out = tmp_path / "voice.mp3"
+
+    extract_audio(first, out)
+    extract_audio(second, out)
+
+    assert abs(len(AudioSegment.from_file(str(out))) - 2000) < 100

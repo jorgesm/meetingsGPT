@@ -24,14 +24,26 @@ _CHUNKING_VERSION = 2
 # ---------------------------------------------------------------------------
 
 
-def extract_audio(input_path: Path, output_path: Path) -> Path:
-    """Extract the audio track of a video or audio file to mp3 using ffmpeg.
+def source_marker_path(audio_path: Path) -> Path:
+    """Sidecar recording which input file an extracted mp3 was produced from."""
+    return audio_path.with_suffix(".source.json")
 
+
+def extract_audio(input_path: Path, output_path: Path) -> Path:
+    """Extract the audio track of a video or audio file to 16 kHz mono mp3 using ffmpeg.
+
+    An existing mp3 is reused only if it was extracted from this same input file.
     Returns the output audio path.
     """
-    if output_path.exists():
-        logger.info(f"Audio already exists at {output_path}. Skipping extraction.")
-        return output_path
+    source = {"path": str(input_path.resolve()), **_get_audio_fingerprint(input_path)}
+    marker = source_marker_path(output_path)
+    if output_path.exists() and marker.exists():
+        try:
+            if json.loads(marker.read_text(encoding="utf-8")) == source:
+                logger.info(f"Audio already exists at {output_path}. Skipping extraction.")
+                return output_path
+        except Exception:
+            logger.warning(f"Error reading {marker}; re-extracting audio.")
 
     logger.info(f"Extracting audio from {input_path} -> {output_path}")
     # Write to a temp file so an interrupted extraction never leaves a reusable partial mp3
@@ -43,6 +55,10 @@ def extract_audio(input_path: Path, output_path: Path) -> Path:
                 "-i",
                 str(input_path),
                 "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
                 "-acodec",
                 "libmp3lame",
                 "-q:a",
@@ -56,6 +72,7 @@ def extract_audio(input_path: Path, output_path: Path) -> Path:
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg failed: {result.stderr[:500]}")
         tmp_path.replace(output_path)
+        marker.write_text(json.dumps(source), encoding="utf-8")
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -212,6 +229,8 @@ def split_audio(
 
     Returns list of chunk file paths.
     """
+    if overlap_ms >= chunk_ms:
+        raise ValueError(f"overlap_ms ({overlap_ms}) must be smaller than chunk_ms ({chunk_ms})")
     chunk_folder.mkdir(parents=True, exist_ok=True)
     existing = sorted(chunk_folder.glob("chunk_*.mp3"))
 
@@ -220,13 +239,13 @@ def split_audio(
         logger.info(f"Reusing {len(existing)} cached chunks.")
         return existing
 
-    # Clear stale chunks along with their transcription caches, which are keyed by chunk name
-    for old in [*existing, *chunk_folder.glob("chunk_*.json")]:
-        old.unlink()
+    # Clear stale chunks, their transcription caches (keyed by chunk name) and the manifest,
+    # so an interrupted re-split can never pass as a valid cache
+    for old in [*existing, *chunk_folder.glob("chunk_*.json"), chunk_folder / "chunks.json"]:
+        old.unlink(missing_ok=True)
 
     logger.info(f"Splitting audio into chunks from {audio_path}")
-    # Downmix before splitting: chunks are sent at this format anyway, and every copy
-    # made while splitting and merging is ~5x smaller.
+    # Chunks are sent as 16 kHz mono; a no-op for audio produced by extract_audio
     audio = AudioSegment.from_file(str(audio_path)).set_channels(1).set_frame_rate(16000)
 
     if len(audio) <= chunk_ms:

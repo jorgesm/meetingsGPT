@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from meetingsgpt.audio import DEFAULT_CHUNK_MS, extract_audio, split_audio
+from meetingsgpt.audio import DEFAULT_CHUNK_MS, extract_audio, source_marker_path, split_audio
 from meetingsgpt.config import (
     SCRIPT_DIR,
     TemplatesRegistry,
@@ -156,11 +156,8 @@ def process(
 
 def _save(out_dir: Path, stem: str, suffix: str, content: str) -> None:
     path = out_dir / f"{stem}_{suffix}.txt"
-    try:
-        path.write_text(content, encoding="utf-8")
-        logger.info(f"{suffix} saved to {path}")
-    except Exception:
-        logger.exception(f"Error saving {suffix}")
+    path.write_text(content, encoding="utf-8")
+    logger.info(f"{suffix} saved to {path}")
 
 
 def _cleanup(
@@ -172,8 +169,8 @@ def _cleanup(
         logger.info("Keeping intermediate files.")
         return
     try:
-        if audio_path.exists():
-            audio_path.unlink()
+        audio_path.unlink(missing_ok=True)
+        source_marker_path(audio_path).unlink(missing_ok=True)
         if chunk_folder.exists():
             shutil.rmtree(chunk_folder)
     except Exception:
