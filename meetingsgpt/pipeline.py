@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from meetingsgpt.audio import extract_audio, split_audio
+from meetingsgpt.audio import DEFAULT_CHUNK_MS, extract_audio, source_marker_path, split_audio
 from meetingsgpt.config import (
     SCRIPT_DIR,
     TemplatesRegistry,
@@ -38,11 +38,11 @@ def _segments_to_plain_text(segments: list[str]) -> str:
 
 
 def process(
-    video_path: str | Path,
+    input_path: str | Path,
     *,
     language: str = "es",
     keep_intermediate: bool = False,
-    chunk_ms: int = 5 * 60 * 1000,
+    chunk_ms: int = DEFAULT_CHUNK_MS,
     overlap_ms: int = 5000,
     use_silence: bool = True,
     transcribe_only: bool = False,
@@ -53,26 +53,26 @@ def process(
     post_process: bool = True,
     vocabulary_path: Path | None = None,
 ) -> None:
-    """Run the full meeting processing pipeline."""
+    """Run the full meeting processing pipeline on a video or audio file."""
     ensure_ffmpeg()
 
-    video_path = Path(video_path)
-    if not video_path.is_file():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+    input_path = Path(input_path)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"File not found: {input_path}")
 
     # Output directory
-    recording_date = _get_recording_date(video_path)
-    output_stem = f"{recording_date}_{video_path.stem}"
+    recording_date = _get_recording_date(input_path)
+    output_stem = f"{recording_date}_{input_path.stem}"
     out_dir = SCRIPT_DIR / "outputs" / output_stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    audio_path = out_dir / f"{video_path.stem}.mp3"
+    audio_path = out_dir / f"{input_path.stem}.mp3"
     chunk_folder = out_dir / "chunks"
     api_key = get_openai_key()
 
     try:
         # Step 1: Extract audio
-        extract_audio(video_path, audio_path)
+        extract_audio(input_path, audio_path)
 
         # Step 2: Load vocabulary hints
         vocabulary = load_vocabulary(vocabulary_path)
@@ -106,7 +106,7 @@ def process(
         transcription_plain = _segments_to_plain_text(segments)
 
         # Step 4: Post-process transcription
-        if post_process and not transcribe_only:
+        if post_process:
             logger.info("Post-processing transcription with GPT...")
             transcription_clean = post_process_transcription(
                 transcription_plain,
@@ -140,14 +140,15 @@ def process(
             model=model,
         )
 
-        if summary:
-            _save(out_dir, output_stem, f"summary_{type_key}", summary)
-            logger.info("Transcription and summary saved successfully.")
-        else:
-            logger.error("Could not generate the summary.")
+        if not summary:
+            raise RuntimeError("Could not generate the summary.")
+        _save(out_dir, output_stem, f"summary_{type_key}", summary)
+        logger.info("Transcription and summary saved successfully.")
 
-    except Exception:
-        logger.exception("Pipeline failed.")
+    except BaseException:
+        # Intermediates hold the per-chunk transcription cache, so a rerun skips finished chunks
+        logger.exception("Pipeline failed; keeping intermediate files so a rerun resumes.")
+        keep_intermediate = True
         raise
     finally:
         _cleanup(audio_path, chunk_folder, keep_intermediate)
@@ -155,11 +156,8 @@ def process(
 
 def _save(out_dir: Path, stem: str, suffix: str, content: str) -> None:
     path = out_dir / f"{stem}_{suffix}.txt"
-    try:
-        path.write_text(content, encoding="utf-8")
-        logger.info(f"{suffix} saved to {path}")
-    except Exception:
-        logger.exception(f"Error saving {suffix}")
+    path.write_text(content, encoding="utf-8")
+    logger.info(f"{suffix} saved to {path}")
 
 
 def _cleanup(
@@ -171,8 +169,8 @@ def _cleanup(
         logger.info("Keeping intermediate files.")
         return
     try:
-        if audio_path.exists():
-            audio_path.unlink()
+        audio_path.unlink(missing_ok=True)
+        source_marker_path(audio_path).unlink(missing_ok=True)
         if chunk_folder.exists():
             shutil.rmtree(chunk_folder)
     except Exception:

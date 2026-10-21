@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from openai import OpenAI, OpenAIError
+from openai import OpenAI
 from rich.progress import Progress
 
 from meetingsgpt.utils import retry_openai_call, split_sentences
@@ -33,11 +33,14 @@ class WhisperAPIBackend:
         initial_prompt: str = "",
         keywords: list[str] | None = None,
     ) -> list[str]:
-        # Check per-chunk cache
+        # Per-chunk cache, valid only for the same request inputs
         cache_path = audio_path.with_suffix(".json")
+        cache_key = {"language": language, "prompt": initial_prompt, "keywords": keywords or []}
         if cache_path.exists():
             try:
-                return json.loads(cache_path.read_text(encoding="utf-8"))
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("key") == cache_key:
+                    return cached["segments"]
             except Exception:
                 logger.warning(f"Error reading cache {cache_path}; re-transcribing.")
 
@@ -52,22 +55,17 @@ class WhisperAPIBackend:
                     prompt=initial_prompt if initial_prompt else "",
                 )
 
+        result = retry_openai_call(_call)
+        text = result.text.strip()
+        segments = [text] if text else []
+
         try:
-            result = retry_openai_call(_call)
-            text = result.text.strip()
-            segments = [text] if text else []
+            cache = {"key": cache_key, "segments": segments}
+            cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            logger.warning("Error saving transcription cache.")
 
-            try:
-                cache_path.write_text(
-                    json.dumps(segments, ensure_ascii=False), encoding="utf-8"
-                )
-            except Exception:
-                logger.warning("Error saving transcription cache.")
-
-            return segments
-        except OpenAIError:
-            logger.exception(f"API error transcribing {audio_path}")
-            return []
+        return segments
 
 
 # ---------------------------------------------------------------------------
@@ -98,10 +96,14 @@ def transcribe_chunks(
     context = ""
     with Progress() as progress:
         task = progress.add_task("Transcribing...", total=len(chunks))
-        for chunk_path in chunks:
-            segments = backend.transcribe(
-                chunk_path, language, initial_prompt=context, keywords=vocabulary
-            )
+        for i, chunk_path in enumerate(chunks, start=1):
+            try:
+                segments = backend.transcribe(
+                    chunk_path, language, initial_prompt=context, keywords=vocabulary
+                )
+            except Exception:
+                logger.exception(f"Error transcribing chunk {i}")
+                raise
             all_segments.extend(segments)
 
             if segments:
@@ -121,6 +123,7 @@ def _transcribe_parallel(
 ) -> list[str]:
     """Parallel transcription for API backends."""
     results: list[list[str]] = [[] for _ in chunks]
+    failed: list[int] = []
 
     with Progress() as progress:
         task = progress.add_task("Transcribing in parallel...", total=len(chunks))
@@ -136,7 +139,11 @@ def _transcribe_parallel(
                     results[idx] = future.result()
                 except Exception:
                     logger.exception(f"Error transcribing chunk {idx + 1}")
+                    failed.append(idx + 1)
                 progress.update(task, advance=1)
+
+    if failed:
+        raise RuntimeError(f"Transcription failed for chunks {sorted(failed)}")
 
     all_segments: list[str] = []
     for chunk_segments in results:

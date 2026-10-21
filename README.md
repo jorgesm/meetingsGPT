@@ -44,6 +44,9 @@ uv run meetingsgpt run --type internal /path/to/video.mov
 # Transcribe only (no summary)
 uv run meetingsgpt run --transcribe-only /path/to/video.mov
 
+# Transcribe an audio file (voice note, podcast...) — no summary, cleaned-up text
+uv run meetingsgpt transcribe /path/to/audio.opus
+
 # List available summary types
 uv run meetingsgpt list-types
 ```
@@ -72,8 +75,8 @@ You can add new types by editing `templates.yaml`.
 | `--vocabulary`         | File with domain vocabulary (one term per line)         |
 | `--keep-intermediate`  | Keep intermediate files                                 |
 | `--no-silence`         | Use fixed duration instead of silence detection         |
-| `--chunk-ms`           | Chunk duration in ms (default: 300000)                  |
-| `--overlap-ms`         | Overlap between chunks in ms (default: 5000)            |
+| `--chunk-ms`           | Max chunk duration in ms (default: 600000)              |
+| `--overlap-ms`         | Overlap between fixed-duration chunks in ms (default: 5000) |
 | `--transcribe-only`    | Only transcribe, skip summarization                     |
 
 Run `uv run meetingsgpt run --help` for the full, always-up-to-date list.
