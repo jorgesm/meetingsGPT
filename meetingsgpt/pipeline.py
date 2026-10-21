@@ -140,13 +140,12 @@ def process(
             model=model,
         )
 
-        if summary:
-            _save(out_dir, output_stem, f"summary_{type_key}", summary)
-            logger.info("Transcription and summary saved successfully.")
-        else:
-            logger.error("Could not generate the summary.")
+        if not summary:
+            raise RuntimeError("Could not generate the summary.")
+        _save(out_dir, output_stem, f"summary_{type_key}", summary)
+        logger.info("Transcription and summary saved successfully.")
 
-    except Exception:
+    except BaseException:
         # Intermediates hold the per-chunk transcription cache, so a rerun skips finished chunks
         logger.exception("Pipeline failed; keeping intermediate files so a rerun resumes.")
         keep_intermediate = True

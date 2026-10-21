@@ -57,12 +57,12 @@ Everything flows through `pipeline.process()`. Each output goes to `outputs/<YYY
 ### Two-level caching
 
 - **Chunk cache**: `audio.py` writes `chunks.json` in the chunk folder with the audio fingerprint (mtime+size), chunking params and `_CHUNKING_VERSION`. If unchanged, `split_audio()` reuses existing chunk files instead of re-splitting; otherwise it deletes the old chunks and their transcription caches.
-- **Transcription cache**: `transcribe.py`'s `WhisperAPIBackend` caches each chunk's transcription as `<chunk>.json` next to the chunk, keyed only by the chunk file itself — reruns skip the API call if the cache file exists.
+- **Transcription cache**: `transcribe.py`'s `WhisperAPIBackend` caches each chunk's transcription as `<chunk>.json` next to the chunk, together with the request inputs (language, prompt, keywords) — reruns skip the API call only if those inputs match.
 - Both caches are wiped by default at the end of a successful run (`pipeline._cleanup`) unless `--keep-intermediate` is passed. A failed run keeps them, so a rerun only re-transcribes the chunks that failed. A chunk whose API call fails after retries fails the whole run rather than leaving a silent gap in the transcription.
 
 ### Chunking
 
-Chunks are as long as `--chunk-ms` allows (`DEFAULT_CHUNK_MS`, 10 min): fewer cuts means more context for `gpt-transcribe`, which noticeably improves consistency of names and terms. Audio no longer than that is sent whole (voice notes). Longer audio is split on silences and the resulting parts are merged back up to `chunk_ms` (`_merge_parts()`), so every cut lands on a pause; a stretch with no usable pause longer than `chunk_ms` is cut at fixed duration.
+Chunks are as long as `--chunk-ms` allows (`DEFAULT_CHUNK_MS`, 10 min): fewer cuts means more context for `gpt-transcribe`, which noticeably improves consistency of names and terms. Audio no longer than that is sent whole (voice notes). Longer audio is split on silences and the resulting parts are merged back up to `chunk_ms` (`_merge_parts()`), so every cut lands on a pause; a stretch with no usable pause longer than `chunk_ms` is cut into fixed windows overlapping by `--overlap-ms` (`_fixed_windows()`, the same cutter `--no-silence` uses). Audio is downmixed to 16 kHz mono right after loading, before any splitting.
 
 ### Transcription context continuity
 

@@ -45,9 +45,11 @@ KeepIntermediate = Annotated[
 NoSilence = Annotated[
     bool, typer.Option("--no-silence", help="Use fixed duration instead of silence detection.")
 ]
-ChunkMs = Annotated[int, typer.Option("--chunk-ms", help="Max duration of each chunk in ms.")]
+ChunkMs = Annotated[
+    int, typer.Option("--chunk-ms", min=1000, help="Max duration of each chunk in ms.")
+]
 OverlapMs = Annotated[
-    int, typer.Option("--overlap-ms", help="Overlap between fixed-duration chunks in ms.")
+    int, typer.Option("--overlap-ms", min=0, help="Overlap between fixed-duration chunks in ms.")
 ]
 Workers = Annotated[
     int, typer.Option("--workers", "-w", help="Parallel threads for API transcription.")

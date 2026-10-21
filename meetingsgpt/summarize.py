@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import tiktoken
-from openai import OpenAI, OpenAIError
+from openai import OpenAI
 from rich.progress import Progress
 
 from meetingsgpt.config import LANGUAGE_NAMES
@@ -157,25 +157,17 @@ def summarize_text(
         user_prompt = f"Las notas de la última reunión son:\n{block}"
         return _chat_call(client, model, system_prompt, user_prompt)
 
-    try:
-        blocks = _split_by_tokens(text, max_tokens_per_block, model)
+    blocks = _split_by_tokens(text, max_tokens_per_block, model)
 
-        if len(blocks) == 1:
-            logger.info("Text fits in a single block. Summarizing directly.")
-            return _summarize_block(blocks[0])
+    if len(blocks) == 1:
+        logger.info("Text fits in a single block. Summarizing directly.")
+        return _summarize_block(blocks[0])
 
-        logger.info(f"Map-reduce: {len(blocks)} blocks.")
-        partials = _map_blocks_with_progress(blocks, _summarize_block, "Summarizing blocks...")
+    logger.info(f"Map-reduce: {len(blocks)} blocks.")
+    partials = _map_blocks_with_progress(blocks, _summarize_block, "Summarizing blocks...")
 
-        logger.info("Reduce phase: merging partial summaries.")
-        return _chat_call(client, model, system_prompt, _build_reduce_prompt(partials))
-
-    except OpenAIError:
-        logger.exception("API error during summarization.")
-        return ""
-    except Exception:
-        logger.exception("Unexpected error during summarization.")
-        return ""
+    logger.info("Reduce phase: merging partial summaries.")
+    return _chat_call(client, model, system_prompt, _build_reduce_prompt(partials))
 
 
 # ---------------------------------------------------------------------------

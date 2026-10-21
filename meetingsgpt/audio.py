@@ -24,8 +24,8 @@ _CHUNKING_VERSION = 2
 # ---------------------------------------------------------------------------
 
 
-def extract_audio(video_path: Path, output_path: Path) -> Path:
-    """Extract audio from video using ffmpeg directly.
+def extract_audio(input_path: Path, output_path: Path) -> Path:
+    """Extract the audio track of a video or audio file to mp3 using ffmpeg.
 
     Returns the output audio path.
     """
@@ -33,25 +33,31 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
         logger.info(f"Audio already exists at {output_path}. Skipping extraction.")
         return output_path
 
-    logger.info(f"Extracting audio from {video_path} -> {output_path}")
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-acodec",
-            "libmp3lame",
-            "-q:a",
-            "2",
-            "-y",
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {result.stderr[:500]}")
+    logger.info(f"Extracting audio from {input_path} -> {output_path}")
+    # Write to a temp file so an interrupted extraction never leaves a reusable partial mp3
+    tmp_path = output_path.with_name(f"{output_path.stem}.partial.mp3")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                str(input_path),
+                "-vn",
+                "-acodec",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                "-y",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {result.stderr[:500]}")
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
     logger.info(f"Audio extracted to {output_path}")
     return output_path
@@ -144,13 +150,30 @@ def _chunks_cache_valid(
 # ---------------------------------------------------------------------------
 
 
-def _merge_parts(parts: list[AudioSegment], max_ms: int) -> list[AudioSegment]:
+def _fixed_windows(audio: AudioSegment, window_ms: int, overlap_ms: int) -> list[AudioSegment]:
+    """Cut audio into consecutive windows of ``window_ms`` that overlap by ``overlap_ms``."""
+    step = max(window_ms - overlap_ms, 1)
+    windows: list[AudioSegment] = []
+    start = 0
+    while start < len(audio):
+        end = min(start + window_ms, len(audio))
+        windows.append(audio[start:end])
+        if end == len(audio):
+            break
+        start += step
+    return windows
+
+
+def _merge_parts(
+    parts: list[AudioSegment], max_ms: int, overlap_ms: int
+) -> list[AudioSegment]:
     """Greedily join consecutive silence-split parts into chunks of at most ``max_ms``.
 
     Split points stay on silences, but chunks are long enough to give the transcription
-    model context. A part longer than ``max_ms`` (no usable pause) is cut at fixed duration.
+    model context. A part longer than ``max_ms`` (no usable pause) is cut into
+    overlapping fixed-duration windows instead.
     """
-    pieces = [part[i : i + max_ms] for part in parts for i in range(0, len(part), max_ms)]
+    pieces = [window for part in parts for window in _fixed_windows(part, max_ms, overlap_ms)]
     groups: list[list[AudioSegment]] = []
     group_ms = 0
     for piece in pieces:
@@ -202,49 +225,31 @@ def split_audio(
         old.unlink()
 
     logger.info(f"Splitting audio into chunks from {audio_path}")
-    audio = AudioSegment.from_file(str(audio_path))
-    paths: list[Path] = []
+    # Downmix before splitting: chunks are sent at this format anyway, and every copy
+    # made while splitting and merging is ~5x smaller.
+    audio = AudioSegment.from_file(str(audio_path)).set_channels(1).set_frame_rate(16000)
 
+    if len(audio) <= chunk_ms:
+        segments = [audio] if len(audio) else []
+    elif use_silence:
+        parts = split_on_silence(
+            audio,
+            min_silence_len=600,
+            silence_thresh=audio.dBFS - 16,
+            keep_silence=250,
+        )
+        segments = _merge_parts(parts, chunk_ms, overlap_ms)
+    else:
+        segments = _fixed_windows(audio, chunk_ms, overlap_ms)
+
+    paths: list[Path] = []
     with Progress() as progress:
-        if use_silence:
-            task = progress.add_task("Splitting by silence...", total=None)
-            if len(audio) <= chunk_ms:
-                parts = [audio]
-            else:
-                parts = _merge_parts(
-                    split_on_silence(
-                        audio,
-                        min_silence_len=600,
-                        silence_thresh=audio.dBFS - 16,
-                        keep_silence=250,
-                    ),
-                    chunk_ms,
-                )
-            progress.update(task, total=len(parts))
-            for i, part in enumerate(parts, start=1):
-                part = part.set_channels(1).set_frame_rate(16000)
-                path = chunk_folder / f"chunk_{i:03d}.mp3"
-                part.export(str(path), format="mp3")
-                paths.append(path)
-                progress.update(task, advance=1)
-        else:
-            step = max(chunk_ms - overlap_ms, 1)
-            total = len(audio)
-            num_chunks = (total + step - 1) // step
-            task = progress.add_task("Splitting by fixed duration...", total=num_chunks)
-            i = 0
-            start = 0
-            while start < total:
-                end = min(start + chunk_ms, total)
-                chunk = audio[start:end].set_channels(1).set_frame_rate(16000)
-                path = chunk_folder / f"chunk_{i + 1:03d}.mp3"
-                chunk.export(str(path), format="mp3")
-                paths.append(path)
-                i += 1
-                progress.update(task, advance=1)
-                if end == total:
-                    break
-                start += step
+        task = progress.add_task("Exporting chunks...", total=len(segments))
+        for i, segment in enumerate(segments, start=1):
+            path = chunk_folder / f"chunk_{i:03d}.mp3"
+            segment.export(str(path), format="mp3")
+            paths.append(path)
+            progress.update(task, advance=1)
 
     if paths:
         _save_manifest(chunk_folder, audio_path, len(paths), chunk_ms, overlap_ms, use_silence)
