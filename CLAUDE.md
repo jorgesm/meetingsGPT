@@ -17,6 +17,7 @@ cp .env.example .env   # add OPENAI_API_KEY
 uv run meetingsgpt run /path/to/video.mov
 uv run meetingsgpt run --type internal --language en /path/to/video.mov
 uv run meetingsgpt run --transcribe-only /path/to/video.mov
+uv run meetingsgpt transcribe /path/to/audio.opus   # audio/voice notes: transcribe + GPT cleanup, no summary
 
 # List available summary types (works without an API key)
 uv run meetingsgpt list-types
@@ -32,7 +33,7 @@ There is no test suite yet — there's no `tests/` directory despite the package
 
 ```
 meetingsgpt/
-├── cli.py          # Typer entry point: `run` and `list-types` commands, logging setup, load_dotenv()
+├── cli.py          # Typer entry point: `run`, `transcribe` and `list-types` commands, logging setup, load_dotenv()
 ├── config.py       # Pydantic models for templates.yaml, env/ffmpeg checks, vocabulary loading
 ├── pipeline.py     # Orchestrator: extract → chunk → transcribe → post-process → summarize → save
 ├── audio.py        # ffmpeg extraction (subprocess, no moviepy), pydub chunking + chunk cache manifest
@@ -52,9 +53,13 @@ Everything flows through `pipeline.process()`. Each output goes to `outputs/<YYY
 
 ### Two-level caching
 
-- **Chunk cache**: `audio.py` writes `chunks.json` in the chunk folder with the audio fingerprint (mtime+size) and chunking params. If unchanged, `split_audio()` reuses existing chunk files instead of re-splitting.
+- **Chunk cache**: `audio.py` writes `chunks.json` in the chunk folder with the audio fingerprint (mtime+size), chunking params and `_CHUNKING_VERSION`. If unchanged, `split_audio()` reuses existing chunk files instead of re-splitting; otherwise it deletes the old chunks and their transcription caches.
 - **Transcription cache**: `transcribe.py`'s `WhisperAPIBackend` caches each chunk's transcription as `<chunk>.json` next to the chunk, keyed only by the chunk file itself — reruns skip the API call if the cache file exists.
 - Both caches are wiped by default at the end of a run (`pipeline._cleanup`) unless `--keep-intermediate` is passed.
+
+### Chunking
+
+Chunks are as long as `--chunk-ms` allows (`DEFAULT_CHUNK_MS`, 10 min): fewer cuts means more context for `gpt-transcribe`, which noticeably improves consistency of names and terms. Audio no longer than that is sent whole (voice notes). Longer audio is split on silences and the resulting parts are merged back up to `chunk_ms` (`_merge_parts()`), so every cut lands on a pause.
 
 ### Transcription context continuity
 

@@ -13,6 +13,11 @@ from rich.progress import Progress
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CHUNK_MS = 10 * 60 * 1000
+
+# Bump when the chunking algorithm changes, so cached chunks from the old one are discarded.
+_CHUNKING_VERSION = 2
+
 
 # ---------------------------------------------------------------------------
 # Audio extraction (ffmpeg, no moviepy)
@@ -82,6 +87,7 @@ def _save_manifest(
     use_silence: bool,
 ) -> None:
     manifest = {
+        "version": _CHUNKING_VERSION,
         "audio": _get_audio_fingerprint(audio_path),
         "params": {
             "chunk_ms": chunk_ms,
@@ -109,6 +115,9 @@ def _chunks_cache_valid(
     if manifest is None:
         return False
     try:
+        if manifest.get("version") != _CHUNKING_VERSION:
+            logger.info("Chunking algorithm changed; regenerating chunks.")
+            return False
         if _get_audio_fingerprint(audio_path) != manifest.get("audio", {}):
             logger.info("Audio changed; regenerating chunks.")
             return False
@@ -135,15 +144,33 @@ def _chunks_cache_valid(
 # ---------------------------------------------------------------------------
 
 
+def _merge_parts(parts: list[AudioSegment], max_ms: int) -> list[AudioSegment]:
+    """Greedily join consecutive silence-split parts into chunks of at most ``max_ms``.
+
+    Each split point stays on a silence, but chunks are long enough to give the
+    transcription model context. A single part longer than ``max_ms`` is kept as is.
+    """
+    merged: list[AudioSegment] = []
+    for part in parts:
+        if merged and len(merged[-1]) + len(part) <= max_ms:
+            merged[-1] += part
+        else:
+            merged.append(part)
+    return merged
+
+
 def split_audio(
     audio_path: Path,
     chunk_folder: Path,
     *,
-    chunk_ms: int = 5 * 60 * 1000,
+    chunk_ms: int = DEFAULT_CHUNK_MS,
     overlap_ms: int = 5000,
     use_silence: bool = True,
 ) -> list[Path]:
-    """Split audio into chunks by silence or fixed duration.
+    """Split audio into chunks of at most ``chunk_ms``, cut on silences or at fixed duration.
+
+    Audio no longer than ``chunk_ms`` becomes a single chunk, so the transcription model
+    sees it whole.
 
     Returns list of chunk file paths.
     """
@@ -155,8 +182,8 @@ def split_audio(
         logger.info(f"Reusing {len(existing)} cached chunks.")
         return existing
 
-    # Clear stale chunks
-    for old in existing:
+    # Clear stale chunks along with their transcription caches, which are keyed by chunk name
+    for old in [*existing, *chunk_folder.glob("chunk_*.json")]:
         old.unlink()
 
     logger.info(f"Splitting audio into chunks from {audio_path}")
@@ -166,12 +193,18 @@ def split_audio(
     with Progress() as progress:
         if use_silence:
             task = progress.add_task("Splitting by silence...", total=None)
-            parts = split_on_silence(
-                audio,
-                min_silence_len=600,
-                silence_thresh=audio.dBFS - 16,
-                keep_silence=250,
-            )
+            if len(audio) <= chunk_ms:
+                parts = [audio]
+            else:
+                parts = _merge_parts(
+                    split_on_silence(
+                        audio,
+                        min_silence_len=600,
+                        silence_thresh=audio.dBFS - 16,
+                        keep_silence=250,
+                    ),
+                    chunk_ms,
+                )
             progress.update(task, total=len(parts))
             for i, part in enumerate(parts, start=1):
                 part = part.set_channels(1).set_frame_rate(16000)

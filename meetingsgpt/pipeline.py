@@ -7,7 +7,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from meetingsgpt.audio import extract_audio, split_audio
+from meetingsgpt.audio import DEFAULT_CHUNK_MS, extract_audio, split_audio
 from meetingsgpt.config import (
     SCRIPT_DIR,
     TemplatesRegistry,
@@ -42,7 +42,7 @@ def process(
     *,
     language: str = "es",
     keep_intermediate: bool = False,
-    chunk_ms: int = 5 * 60 * 1000,
+    chunk_ms: int = DEFAULT_CHUNK_MS,
     overlap_ms: int = 5000,
     use_silence: bool = True,
     transcribe_only: bool = False,
@@ -53,12 +53,12 @@ def process(
     post_process: bool = True,
     vocabulary_path: Path | None = None,
 ) -> None:
-    """Run the full meeting processing pipeline."""
+    """Run the full meeting processing pipeline on a video or audio file."""
     ensure_ffmpeg()
 
     video_path = Path(video_path)
     if not video_path.is_file():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+        raise FileNotFoundError(f"File not found: {video_path}")
 
     # Output directory
     recording_date = _get_recording_date(video_path)
@@ -106,7 +106,7 @@ def process(
         transcription_plain = _segments_to_plain_text(segments)
 
         # Step 4: Post-process transcription
-        if post_process and not transcribe_only:
+        if post_process:
             logger.info("Post-processing transcription with GPT...")
             transcription_clean = post_process_transcription(
                 transcription_plain,

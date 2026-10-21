@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from meetingsgpt.audio import DEFAULT_CHUNK_MS
 from meetingsgpt.config import load_templates
 from meetingsgpt.pipeline import process
 from meetingsgpt.summarize import DEFAULT_MODEL
@@ -28,7 +29,7 @@ for noisy in ("openai", "httpx"):
 
 app = typer.Typer(
     name="meetingsgpt",
-    help="Transcribe and summarize meeting videos.",
+    help="Transcribe and summarize meeting recordings (video or audio).",
     add_completion=False,
 )
 console = Console()
@@ -45,7 +46,7 @@ def run(
         False, "--no-silence", help="Use fixed duration instead of silence detection."
     ),
     chunk_ms: int = typer.Option(
-        5 * 60 * 1000, "--chunk-ms", help="Duration of each chunk in ms."
+        DEFAULT_CHUNK_MS, "--chunk-ms", help="Max duration of each chunk in ms."
     ),
     overlap_ms: int = typer.Option(5000, "--overlap-ms", help="Overlap between chunks in ms."),
     summary_type: str | None = typer.Option(
@@ -65,7 +66,7 @@ def run(
         None, "--vocabulary", help="File with domain vocabulary (one term per line)."
     ),
 ) -> None:
-    """Process a meeting video: extract audio, transcribe, and summarize."""
+    """Process a meeting recording: extract audio, transcribe, and summarize."""
     process(
         video_path,
         language=language,
@@ -75,6 +76,41 @@ def run(
         use_silence=not no_silence,
         transcribe_only=transcribe_only,
         summary_type=summary_type,
+        model=model,
+        max_workers=max_workers,
+        post_process=not no_post_process and not transcribe_only,
+        vocabulary_path=vocabulary,
+    )
+
+
+@app.command()
+def transcribe(
+    audio_path: Path = typer.Argument(
+        ..., help="Path to the audio file (any ffmpeg-readable format: opus, m4a, mp3, ...)."
+    ),
+    language: str = typer.Option("es", "--language", "-l", help="Language code (es, en, ...)."),
+    model: str = typer.Option(
+        DEFAULT_MODEL, "--model", "-m", help="GPT model for post-processing."
+    ),
+    max_workers: int = typer.Option(
+        4, "--workers", "-w", help="Parallel threads for API transcription."
+    ),
+    no_post_process: bool = typer.Option(
+        False, "--no-post-process", help="Disable GPT post-processing of the transcription."
+    ),
+    vocabulary: Path | None = typer.Option(
+        None, "--vocabulary", help="File with domain vocabulary (one term per line)."
+    ),
+    keep_intermediate: bool = typer.Option(
+        False, "--keep-intermediate", help="Keep intermediate files."
+    ),
+) -> None:
+    """Transcribe an audio file (e.g. a voice note) without summarizing it."""
+    process(
+        audio_path,
+        language=language,
+        keep_intermediate=keep_intermediate,
+        transcribe_only=True,
         model=model,
         max_workers=max_workers,
         post_process=not no_post_process,
